@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils'
 import { Search, Filter, Download, Mail, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react'
 import Link from 'next/link'
 
-const PAGE_SIZE = 10
+const PAGE_SIZE = 20
 
 export default function DoctoresPage() {
   const [doctores, setDoctores] = useState<Doctor[]>([])
