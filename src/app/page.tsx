@@ -1,4 +1,4 @@
-import { supabase, Doctor, ESTADO_LABELS, ESTADO_COLORS } from '@/lib/supabase'
+import { supabase, isSupabaseConfigured, Doctor, ESTADO_LABELS, ESTADO_COLORS } from '@/lib/supabase'
 import { Users, Globe, Clock, TrendingUp, AlertCircle, CheckCircle2 } from 'lucide-react'
 import Link from 'next/link'
 import { cn, formatDate } from '@/lib/utils'
@@ -6,6 +6,8 @@ import { cn, formatDate } from '@/lib/utils'
 export const revalidate = 0
 
 async function getDashboardData() {
+  if (!supabase) return null
+
   const { data: doctores } = await supabase
     .from('doctores')
     .select('*')
@@ -33,7 +35,29 @@ async function getDashboardData() {
 }
 
 export default async function DashboardPage() {
-  const { total, conSitio, sinSitio, porEstado, porCiudad, recientes } = await getDashboardData()
+  if (!isSupabaseConfigured || !supabase) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
+        <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-6 text-center">
+          <AlertCircle size={32} className="mx-auto text-yellow-500 mb-3" />
+          <p className="text-sm text-yellow-700">Supabase no está configurado. Ve a Configuración para resolverlo.</p>
+        </div>
+      </div>
+    )
+  }
+
+  const data = await getDashboardData()
+  if (!data) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-bold">Dashboard</h1>
+        <p className="text-gray-500">No se pudo conectar a Supabase.</p>
+      </div>
+    )
+  }
+
+  const { total, conSitio, sinSitio, porEstado, porCiudad, recientes } = data
 
   return (
     <div className="space-y-6">

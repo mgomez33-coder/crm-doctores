@@ -1,9 +1,40 @@
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+import {
+  ACTIVIDAD_TIPOS,
+  ESTADOS,
+  ESTADO_COLORS,
+  ESTADO_LABELS,
+  NOTA_TIPOS,
+  type ActividadTipo,
+  type EstadoDoctor,
+  type NotaTipo,
+} from './crm-constants'
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+export { ACTIVIDAD_TIPOS, ESTADOS, ESTADO_COLORS, ESTADO_LABELS, NOTA_TIPOS }
+export type { ActividadTipo, EstadoDoctor, NotaTipo }
+
+function getEnvConfigured() {
+  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').trim()
+  const anonKey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '').trim()
+  return !!(url && anonKey)
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _supabase: any = null
+
+function getSupabase() {
+  if (_supabase) return _supabase
+  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').trim()
+  const anonKey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? '').trim()
+  if (!url || !anonKey) return null
+  _supabase = createClient(url, anonKey)
+  return _supabase
+}
+
+export const isSupabaseConfigured = getEnvConfigured()
+
+export const supabase = getSupabase()
 
 export type Doctor = {
   id: number
@@ -24,30 +55,17 @@ export type Nota = {
   id: number
   doctor_id: number
   nota: string
-  tipo: string
+  tipo: NotaTipo
   created_at: string
 }
 
-export const ESTADOS = [
-  'pendiente',
-  'pendiente_seo',
-  'propuesta_sitio_web_enviada',
-  'propuesta_directorio_enviada',
-  'sitio_listo',
-] as const
+export type ActividadMetadata = Record<string, unknown>
 
-export const ESTADO_LABELS: Record<string, string> = {
-  pendiente: 'Pendiente',
-  pendiente_seo: 'Pendiente SEO',
-  propuesta_sitio_web_enviada: 'Propuesta Web Enviada',
-  propuesta_directorio_enviada: 'Propuesta Directorio Enviada',
-  sitio_listo: 'Sitio Listo',
-}
-
-export const ESTADO_COLORS: Record<string, string> = {
-  pendiente: 'bg-yellow-100 text-yellow-800',
-  pendiente_seo: 'bg-orange-100 text-orange-800',
-  propuesta_sitio_web_enviada: 'bg-blue-100 text-blue-800',
-  propuesta_directorio_enviada: 'bg-purple-100 text-purple-800',
-  sitio_listo: 'bg-green-100 text-green-800',
+export type Actividad = {
+  id: number
+  doctor_id: number
+  tipo: ActividadTipo
+  descripcion: string
+  metadata: ActividadMetadata
+  created_at: string
 }

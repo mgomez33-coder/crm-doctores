@@ -1,9 +1,9 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
-import { Doctor, supabase, ESTADO_LABELS, ESTADO_COLORS, ESTADOS } from '@/lib/supabase'
+import { Doctor, supabase, isSupabaseConfigured, ESTADO_LABELS, ESTADO_COLORS, ESTADOS } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
-import { Search, Filter, Download, Mail, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react'
+import { Search, Download, Mail, ExternalLink, ChevronLeft, ChevronRight, AlertCircle } from 'lucide-react'
 import Link from 'next/link'
 
 const PAGE_SIZE = 20
@@ -20,6 +20,7 @@ export default function DoctoresPage() {
   const [ciudades, setCiudades] = useState<string[]>([])
 
   const fetchDoctores = useCallback(async () => {
+    if (!supabase) return
     setLoading(true)
     let query = supabase.from('doctores').select('*', { count: 'exact' })
 
@@ -41,8 +42,9 @@ export default function DoctoresPage() {
   }, [search, filterEstado, filterCiudad, filterSitioWeb, page])
 
   useEffect(() => {
-    supabase.from('doctores').select('ciudad').then(({ data }) => {
-      const c = [...new Set((data || []).map(d => d.ciudad).filter(Boolean))] as string[]
+    if (!supabase) return
+    supabase.from('doctores').select('ciudad').then(({ data }: { data: any }) => {
+      const c = [...new Set(((data || []) as any[]).map((d: any) => d.ciudad).filter(Boolean))] as string[]
       setCiudades(c.sort())
     })
   }, [])
@@ -62,6 +64,20 @@ export default function DoctoresPage() {
   }
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
+
+  if (loading) return <div className="p-12 text-center text-gray-400">Cargando...</div>
+
+  if (!isSupabaseConfigured) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-bold">Doctores</h1>
+        <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-6 text-center">
+          <AlertCircle size={32} className="mx-auto text-yellow-500 mb-3" />
+          <p className="text-sm text-yellow-700">Supabase no está configurado. Ve a Configuración para resolverlo.</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
@@ -106,9 +122,7 @@ export default function DoctoresPage() {
 
       {/* Table */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        {loading ? (
-          <div className="p-12 text-center text-gray-400">Cargando...</div>
-        ) : doctores.length === 0 ? (
+        {doctores.length === 0 ? (
           <div className="p-12 text-center text-gray-400">No se encontraron doctores</div>
         ) : (
           <div className="overflow-x-auto">

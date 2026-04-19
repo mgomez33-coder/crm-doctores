@@ -2,10 +2,12 @@
 
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useRouter } from 'next/navigation'
-import { Doctor, Nota, supabase, ESTADO_LABELS, ESTADO_COLORS } from '@/lib/supabase'
+import { Doctor, Nota, Actividad, supabase, isSupabaseConfigured, ESTADO_LABELS, ESTADO_COLORS } from '@/lib/supabase'
+import { isMissingRelationError, normalizeTimelineItems, buildStatusChangeActivityDescription, type TimelineItem } from '@/lib/crm'
+import { NOTA_TIPOS } from '@/lib/crm-constants'
 import { cn, formatDateTime } from '@/lib/utils'
 import StatusBadge from '@/components/StatusBadge'
-import { ArrowLeft, Mail, Globe, Phone, MapPin, Calendar, ExternalLink, Copy, Check, FileText, Plus, Send } from 'lucide-react'
+import { ArrowLeft, Mail, Globe, Phone, MapPin, Calendar, ExternalLink, Copy, Check, FileText, Plus, Send, AlertCircle, Activity, StickyNote } from 'lucide-react'
 
 const EMAIL_TEMPLATES = [
   {
@@ -76,38 +78,103 @@ Saludos cordiales`
   }
 ]
 
+const NOTA_TIPO_LABELS: Record<string, string> = {
+  general: 'General',
+  seguimiento: 'Seguimiento',
+  propuesta: 'Propuesta',
+  recordatorio: 'Recordatorio',
+}
+
+const TIMELINE_KIND_STYLES = {
+  nota: { icon: StickyNote, color: 'text-blue-500', bg: 'bg-blue-50' },
+  actividad: { icon: Activity, color: 'text-green-500', bg: 'bg-green-50' },
+}
+
 export default function DoctorDetailPage() {
   const params = useParams()
   const router = useRouter()
   const id = Number(params.id)
+  const [mounted, setMounted] = useState(false)
   const [doctor, setDoctor] = useState<Doctor | null>(null)
-  const [notas, setNotas] = useState<Nota[]>([])
+  const [timeline, setTimeline] = useState<TimelineItem[]>([])
+  const [notasSupported, setNotasSupported] = useState(true)
+  const [actividadesSupported, setActividadesSupported] = useState(true)
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(false)
   const [editForm, setEditForm] = useState<Partial<Doctor>>({})
   const [newNota, setNewNota] = useState('')
   const [newNotaTipo, setNewNotaTipo] = useState('general')
   const [saving, setSaving] = useState(false)
+  const [notaSaving, setNotaSaving] = useState(false)
+  const [notaError, setNotaError] = useState<string | null>(null)
   const [copied, setCopied] = useState('')
   const [showEmailModal, setShowEmailModal] = useState(false)
-  const [selectedTemplate, setSelectedTemplate] = useState(0)
 
   const fetchDoctor = useCallback(async () => {
+    if (!supabase) return
+    setLoading(true)
+
     const { data: d } = await supabase.from('doctores').select('*').eq('id', id).single()
-    const { data: n } = await supabase.from('notas').select('*').eq('doctor_id', id).order('created_at', { ascending: false })
-    setDoctor(d as Doctor)
-    setNotas((n || []) as Nota[])
+
+    let notas: Nota[] | null = null
+    let actividades: Actividad[] | null = null
+
+    const { data: n, error: notasErr } = await supabase
+      .from('notas')
+      .select('*')
+      .eq('doctor_id', id)
+      .order('created_at', { ascending: false })
+
+    if (notasErr) {
+      if (isMissingRelationError(notasErr, ['notas'])) {
+        setNotasSupported(false)
+      }
+    } else {
+      notas = n as Nota[]
+    }
+
+    const { data: a, error: actErr } = await supabase
+      .from('actividades')
+      .select('*')
+      .eq('doctor_id', id)
+      .order('created_at', { ascending: false })
+
+    if (actErr) {
+      if (isMissingRelationError(actErr, ['actividades'])) {
+        setActividadesSupported(false)
+      }
+    } else {
+      actividades = a as Actividad[]
+    }
+
+    setDoctor(d as unknown as Doctor)
+    setTimeline(normalizeTimelineItems(notas, actividades))
     setLoading(false)
   }, [id])
 
+  useEffect(() => { setMounted(true) }, [])
   useEffect(() => { fetchDoctor() }, [fetchDoctor])
 
-  const handleStatusChange = async (doctorId: number, estado: string) => {
-    await supabase.from('doctores').update({ estado }).eq('id', doctorId)
+  const handleStatusChange = async (doctorId: number, newEstado: string) => {
+    if (!supabase || !doctor) return
+    const oldEstado = doctor.estado
+
+    await supabase.from('doctores').update({ estado: newEstado }).eq('id', doctorId)
+
+    if (actividadesSupported) {
+      await supabase.from('actividades').insert({
+        doctor_id: id,
+        tipo: 'cambio_estado',
+        descripcion: buildStatusChangeActivityDescription(oldEstado, newEstado),
+        metadata: { from: oldEstado, to: newEstado },
+      })
+    }
+
     fetchDoctor()
   }
 
   const handleSave = async () => {
+    if (!supabase) return
     setSaving(true)
     await supabase.from('doctores').update(editForm).eq('id', id)
     setEditing(false)
@@ -116,10 +183,29 @@ export default function DoctorDetailPage() {
   }
 
   const addNota = async () => {
-    if (!newNota.trim()) return
-    await supabase.from('notas').insert({ doctor_id: id, nota: newNota, tipo: newNotaTipo })
-    setNewNota('')
-    fetchDoctor()
+    if (!supabase || !newNota.trim()) return
+    setNotaSaving(true)
+    setNotaError(null)
+
+    const { error } = await supabase
+      .from('notas')
+      .insert({ doctor_id: id, nota: newNota.trim(), tipo: newNotaTipo })
+
+    if (error) {
+      setNotaError(error.message || 'Error al guardar la nota')
+    } else {
+      setNewNota('')
+      if (actividadesSupported) {
+        await supabase.from('actividades').insert({
+          doctor_id: id,
+          tipo: 'nota',
+          descripcion: `Nota agregada: ${newNota.trim().slice(0, 80)}${newNota.trim().length > 80 ? '...' : ''}`,
+          metadata: { nota_tipo: newNotaTipo },
+        })
+      }
+      fetchDoctor()
+    }
+    setNotaSaving(false)
   }
 
   const copyToClipboard = (text: string, label: string) => {
@@ -128,19 +214,42 @@ export default function DoctorDetailPage() {
     setTimeout(() => setCopied(''), 2000)
   }
 
-  const openEmailTemplate = (idx: number) => {
+  const openEmailTemplate = async (idx: number) => {
     if (!doctor) return
     const t = EMAIL_TEMPLATES[idx]
     const subject = t.subject.replace('{nombre}', doctor.nombre)
     const body = t.body.replace('{nombre}', doctor.nombre).replace('{tema}', 'su perfil profesional')
     const mailto = `mailto:${doctor.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
     window.open(mailto)
-    // Log as note
-    supabase.from('notas').insert({ doctor_id: id, nota: `Email enviado: ${t.name}`, tipo: 'seguimiento' })
-    fetchDoctor()
+
+    if (supabase) {
+      await supabase.from('notas').insert({ doctor_id: id, nota: `Email abierto: ${t.name}`, tipo: 'seguimiento' }).then(() => {})
+      if (actividadesSupported) {
+        await supabase.from('actividades').insert({
+          doctor_id: id,
+          tipo: 'correo',
+          descripcion: `Email preparado: ${t.name}`,
+          metadata: { template: t.name, subject },
+        })
+      }
+      fetchDoctor()
+    }
   }
 
-  if (loading) return <div className="p-12 text-center text-gray-400">Cargando...</div>
+  if (!mounted || loading) return <div className="p-12 text-center text-gray-400">Cargando...</div>
+
+  if (!isSupabaseConfigured) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-2xl font-bold">Detalle del Doctor</h1>
+        <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-6 text-center">
+          <AlertCircle size={32} className="mx-auto text-yellow-500 mb-3" />
+          <p className="text-sm text-yellow-700">Supabase no está configurado. Ve a Configuración para resolverlo.</p>
+        </div>
+      </div>
+    )
+  }
+
   if (!doctor) return <div className="p-12 text-center text-gray-400">Doctor no encontrado</div>
 
   const displayDoctor = editing ? { ...doctor, ...editForm } : doctor
@@ -208,45 +317,73 @@ export default function DoctorDetailPage() {
             )}
           </div>
 
-          {/* Notes */}
+          {/* Timeline (Notas + Actividades) */}
           <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h2 className="text-lg font-semibold mb-4">Notas y Seguimiento</h2>
-            <div className="flex gap-2 mb-4">
-              <select value={newNotaTipo} onChange={e => setNewNotaTipo(e.target.value)} className="px-3 py-2 border border-gray-200 rounded-lg text-sm">
-                <option value="general">General</option>
-                <option value="seguimiento">Seguimiento</option>
-                <option value="propuesta">Propuesta</option>
-                <option value="recordatorio">Recordatorio</option>
-              </select>
-              <input
-                type="text"
-                value={newNota}
-                onChange={e => setNewNota(e.target.value)}
-                onKeyDown={e => e.key === 'Enter' && addNota()}
-                placeholder="Agregar nota..."
-                className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              />
-              <button onClick={addNota} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">
-                <Plus size={16} />
-              </button>
-            </div>
+            <h2 className="text-lg font-semibold mb-4">Notas y Actividad</h2>
+
+            {!notasSupported && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4 text-sm text-yellow-700 flex items-center gap-2">
+                <AlertCircle size={16} />
+                La tabla <code className="bg-yellow-100 px-1 rounded">notas</code> no existe. Crea las tablas desde Configuración.
+              </div>
+            )}
+
+            {!actividadesSupported && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4 text-sm text-yellow-700 flex items-center gap-2">
+                <AlertCircle size={16} />
+                La tabla <code className="bg-yellow-100 px-1 rounded">actividades</code> no existe. Crea las tablas desde Configuración.
+              </div>
+            )}
+
+            {notasSupported && (
+              <div className="flex gap-2 mb-4">
+                <select value={newNotaTipo} onChange={e => setNewNotaTipo(e.target.value)} className="px-3 py-2 border border-gray-200 rounded-lg text-sm">
+                  {NOTA_TIPOS.map(t => (
+                    <option key={t} value={t}>{NOTA_TIPO_LABELS[t] || t}</option>
+                  ))}
+                </select>
+                <input
+                  type="text"
+                  value={newNota}
+                  onChange={e => setNewNota(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && !notaSaving && addNota()}
+                  placeholder="Agregar nota..."
+                  disabled={notaSaving}
+                  className="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:opacity-50"
+                />
+                <button onClick={addNota} disabled={notaSaving || !newNota.trim()} className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 disabled:opacity-50">
+                  {notaSaving ? '...' : <Plus size={16} />}
+                </button>
+              </div>
+            )}
+
+            {notaError && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4 text-sm text-red-700">
+                {notaError}
+              </div>
+            )}
+
             <div className="space-y-3 max-h-96 overflow-y-auto">
-              {notas.length === 0 ? (
-                <p className="text-sm text-gray-400 text-center py-4">Sin notas aún</p>
+              {timeline.length === 0 ? (
+                <p className="text-sm text-gray-400 text-center py-4">Sin actividad registrada</p>
               ) : (
-                notas.map(n => (
-                  <div key={n.id} className="flex gap-3 p-3 bg-gray-50 rounded-lg">
-                    <div className={cn('w-2 h-2 rounded-full mt-2 flex-shrink-0',
-                      n.tipo === 'seguimiento' ? 'bg-blue-400' :
-                      n.tipo === 'propuesta' ? 'bg-purple-400' :
-                      n.tipo === 'recordatorio' ? 'bg-orange-400' : 'bg-gray-400'
-                    )} />
-                    <div className="flex-1">
-                      <p className="text-sm">{n.nota}</p>
-                      <p className="text-xs text-gray-400 mt-1">{formatDateTime(n.created_at)} · {n.tipo}</p>
+                timeline.map(item => {
+                  const style = TIMELINE_KIND_STYLES[item.kind]
+                  const Icon = style.icon
+                  return (
+                    <div key={item.id} className="flex gap-3 p-3 bg-gray-50 rounded-lg">
+                      <div className={cn('w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0', style.bg)}>
+                        <Icon size={14} className={style.color} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm">{item.description}</p>
+                        <p className="text-xs text-gray-400 mt-1">
+                          {formatDateTime(item.createdAt)} · {item.kind === 'nota' ? (NOTA_TIPO_LABELS[item.type] || item.type) : item.type}
+                        </p>
+                      </div>
                     </div>
-                  </div>
-                ))
+                  )
+                })
               )}
             </div>
           </div>
@@ -286,7 +423,7 @@ export default function DoctorDetailPage() {
               <h3 className="font-semibold mb-3">Plantillas de Email</h3>
               <div className="space-y-2">
                 {EMAIL_TEMPLATES.map((t, i) => (
-                  <button key={i} onClick={() => openEmailTemplate(i)} className="w-full text-left px-3 py-2.5 bg-gray-50 rounded-lg text-sm hover:bg-gray-100">
+                  <button key={i} onClick={() => { openEmailTemplate(i); setShowEmailModal(false) }} className="w-full text-left px-3 py-2.5 bg-gray-50 rounded-lg text-sm hover:bg-gray-100">
                     <FileText size={14} className="inline mr-2 text-gray-400" />
                     {t.name}
                   </button>
